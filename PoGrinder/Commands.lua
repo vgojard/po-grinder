@@ -19,14 +19,20 @@ local function safePrices(id)
   return {}
 end
 
--- /pogrind : les objets farmables les plus chers, avec leur meilleure zone
-local function scanAll()
+-- Objets farmables triés par meilleur prix (partagé avec la fenêtre)
+function ns.TopItems()
   local rows = {}
   for id in pairs(ns.FarmDB or {}) do
     local p = safePrices(id)
     if p.best then rows[#rows + 1] = { id = id, p = p } end
   end
   table.sort(rows, function(a, b) return a.p.best > b.p.best end)
+  return rows
+end
+
+-- /pogrind objets : les objets farmables les plus chers, avec leur meilleure zone
+local function scanAll()
+  local rows = ns.TopItems()
   ns.Print(string.format("Top %d des ressources farmables (sur %d connues) :", math.min(TOP, #rows), #rows))
   for i = 1, math.min(TOP, #rows) do
     local r = rows[i]
@@ -55,7 +61,11 @@ end
 SLASH_POGRIND1 = "/pogrind"
 SlashCmdList.POGRIND = function(msg)
   msg = strtrim(msg or "")
-  if msg == "" or msg == "zones" then
+  if msg == "" then
+    ns.UI.Toggle()
+    return
+  end
+  if msg == "zones" then
     ns.Zones.Report()
     return
   end
@@ -78,6 +88,6 @@ SlashCmdList.POGRIND = function(msg)
   if id then
     showItem(id)
   else
-    ns.Print("Usage : /pogrind (zones)  |  /pogrind objets  |  /pogrind <objet>  |  /pogrind log  |  /pogrind kph <kills/h>  |  /pogrind nph <nœuds/h>")
+    ns.Print("Usage : /pogrind (fenêtre)  |  /pogrind zones  |  /pogrind objets  |  /pogrind <objet>  |  /pogrind log  |  /pogrind kph <kills/h>  |  /pogrind nph <nœuds/h>")
   end
 end
