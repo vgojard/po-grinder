@@ -26,7 +26,7 @@ function ns.FormatZone(z)
   if z[2] > 0 then parts[#parts + 1] = z[2] .. " points de récolte" end
   if z[3] >= 0.5 then
     parts[#parts + 1] = string.format("mobs ~%.1f drops/tour (niv %d-%d)", z[3], z[4], z[5])
-  elseif (z[6] or 0) > 0 then
+  elseif z[2] == 0 and (z[6] or 0) > 0 then
     parts[#parts + 1] = string.format("%d mobs à taux inconnu (niv %d-%d)", z[6], z[4], z[5])
   end
   if z[7] == 1 then parts[#parts + 1] = "|cff33ff99mesuré|r" end

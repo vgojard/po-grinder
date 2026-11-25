@@ -17,7 +17,7 @@ from luatable import load_globals
 
 ADDONS = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ADDONS, 'PoGrinder', 'FarmDB.lua')
-WTF = os.path.normpath(os.path.join(ADDONS, '..', '..', 'WTF'))
+WTF = os.environ.get('POGRIND_WTF') or os.path.normpath(os.path.join(ADDONS, '..', '..', 'WTF'))
 
 K_PRIOR = 20          # poids de l'a priori (en kills) dans le lissage bayésien
 MIN_KILLS = 20        # sans a priori, nombre de kills avant d'afficher un taux mesuré
@@ -50,6 +50,25 @@ if os.path.exists(p):
     for a, b in re.findall(r'\[(\d+)\]\s*=\s*(\d+)', readtxt(p)): ui2area[int(a)] = int(b)
 log('uiMap->area :', len(ui2area))
 
+# ---------- cmangos classic (a priori : PO, gris, taux de drop, rendement des nœuds) ----------
+DATA = os.path.join(HERE, 'data')
+cm_npc = {}       # npc -> (type, rank, orMoyen, grisParKill)
+cm_drops = collections.defaultdict(dict)   # item -> {npc: taux}
+cm_nodes = collections.defaultdict(dict)   # nomNœud(minuscule) -> {item: qté}
+def tsv(name):
+    p = os.path.join(DATA, name)
+    if not os.path.exists(p): log('absent :', p); return []
+    return [l.rstrip('\n').split('\t') for l in open(p, encoding='utf8')]
+for r in tsv('cmangos_npcs.tsv'):
+    cm_npc[int(r[0])] = (int(r[1]), int(r[2]), (int(r[5]) + int(r[6])) / 2.0, float(r[7]))
+for r in tsv('cmangos_drops.tsv'):
+    cm_drops[int(r[1])][int(r[0])] = float(r[2])
+for r in tsv('cmangos_nodes.tsv'):
+    cm_nodes[r[0].lower()][int(r[1])] = float(r[2])
+for it, d in cm_drops.items():
+    for n, q in d.items(): rates[it].setdefault(n, q)   # wowhead prioritaire, cmangos sinon
+log('cmangos : %d mobs, %d objets avec taux, %d types de nœuds' % (len(cm_npc), len(cm_drops), len(cm_nodes)))
+
 objcache, npccache = {}, {}
 def obj(i):
     if i not in objcache:
@@ -78,9 +97,11 @@ for iid in db.ids('Item'):
             item_objs[iid].add(o); obj_by_name[name.lower()].add(o)
     for n in (db.field('Item', iid, 2) or []): item_npcs[iid].add(n)
 log('objets d\'artisanat Questie :', len(items))
+for it in items:
+    item_npcs[it].update(cm_drops.get(it, {}).keys())
 
 # ---------- Journal PoGrinder ----------
-kills, loots = collections.Counter(), {}
+kills, loots, money = collections.Counter(), {}, {}
 for f in glob.glob(os.path.join(WTF, 'Account', '*', 'SavedVariables', 'PoGrinder.lua')):
     try:
         g = load_globals(f).get('PoGrinderLog') or {}
@@ -89,6 +110,8 @@ for f in glob.glob(os.path.join(WTF, 'Account', '*', 'SavedVariables', 'PoGrinde
             cur = loots.setdefault(k, {'opens': 0, 'items': collections.Counter()})
             cur['opens'] += e.get('opens', 0)
             for it, q in D(e.get('items')).items(): cur['items'][int(it)] += q
+        for k, e in D(g.get('money')).items():
+            m = money.setdefault(int(k), [0, 0.0]); m[0] += e.get('corpses', 0); m[1] += e.get('copper', 0)
         log('journal lu :', f)
     except Exception as ex:
         log('journal illisible, ignoré :', f, ex)
@@ -106,7 +129,9 @@ for key, e in loots.items():
 gm_names = {}   # nodeID GatherMate -> nom anglais
 p = os.path.join(ADDONS, 'GatherMate2', 'Constants.lua')
 if os.path.exists(p):
-    for name, nid in re.findall(r'\[NL\["([^"]+)"\]\]\s*=\s*(\d+)', readtxt(p)): gm_names[int(nid)] = name
+    t = readtxt(p).split('GatherMate.nodeIDs', 1)[0]
+    for name, nid in re.findall(r'\["([^"]+)"\]\s*=\s*(\d+)', t): gm_names.setdefault(int(nid), name)
+    for name, nid in re.findall(r'\["([^"]+)"\]\s*=\s*\{\s*id\s*=\s*(\d+)', t): gm_names.setdefault(int(nid), name)
 log('nœuds GatherMate connus :', len(gm_names))
 
 def gm_tables(globs):
@@ -114,6 +139,7 @@ def gm_tables(globs):
         if re.search(r'(Herb|Mine|Fish|Gas|Treasure)', name) and isinstance(t, dict):
             yield name, t
 gm_count = collections.defaultdict(collections.Counter)   # [(area)][objectName] = nb nœuds
+gm_kind = {}   # nom de nœud (minuscule) -> 'm' (minage) / 'h' (herboristerie)
 def add_gm(globs, label):
     n = 0
     for tname, t in gm_tables(globs):
@@ -124,9 +150,12 @@ def add_gm(globs, label):
             per = collections.Counter(nodes.values())
             for nid, c in per.items():
                 nm = gm_names.get(nid)
-                if nm: gm_count[area][nm.lower()] = max(gm_count[area][nm.lower()], c); n += c
+                if nm:
+                    gm_count[area][nm.lower()] = max(gm_count[area][nm.lower()], c); n += c
+                    if nid // 100 in (2, 4): gm_kind[nm.lower()] = 'm' if nid // 100 == 2 else 'h'
     log('GatherMate', label, ':', n, 'nœuds')
-for f in glob.glob(os.path.join(ADDONS, 'GatherMate2_Data', '*.lua')):
+for f in glob.glob(os.path.join(ADDONS, 'GatherMate2_Data', 'Forever', '*Data.lua')):
+    if os.path.basename(f) == 'GatherMateData.lua': continue
     try: add_gm(load_globals(f), os.path.basename(f))
     except Exception as ex: log('GatherMate2_Data illisible :', f, ex)
 for f in glob.glob(os.path.join(WTF, 'Account', '*', 'SavedVariables', 'GatherMate2.lua')):
@@ -139,7 +168,10 @@ NOT_HUMANOID = re.compile(r'wolf|boar|spider|bear|raptor|crocolisk|cat|panther|t
 cloth_npcs = collections.defaultdict(set)
 for nid in db.ids('Npc'):
     name, lo, hi, rank, friendly, sp = npc(nid)
-    if friendly or rank not in (0, 1) or not sp or NOT_HUMANOID.search(name): continue
+    if friendly or rank not in (0, 1) or not sp: continue
+    if nid in cm_npc:
+        if cm_npc[nid][0] != 7: continue          # 7 = humanoïde
+    elif NOT_HUMANOID.search(name): continue
     for it, (a, b) in CLOTH.items():
         if lo and hi and lo <= b and hi >= a: cloth_npcs[it].add(nid)
 for it in CLOTH:
@@ -187,6 +219,74 @@ for it, name in items.items():
         out.sort(key=lambda t: t[1] + t[2] + t[5] * 0.002, reverse=True)
         res[it] = (name, out[:6])
 
+
+# ---------- Base par zone (étape 3) ----------
+K_MONEY = 10   # poids de l'a priori cmangos (en corps) pour les PO
+def kind_of(name):
+    n = name.lower()
+    if n in gm_kind: return gm_kind[n]
+    return 'm' if re.search(r'vein|deposit|filon|gisement', n) else 'h'
+
+# nœuds : nom -> {item: qté par nœud}
+node_items = collections.defaultdict(dict)
+for it in items:
+    for o in item_objs[it]:
+        nm = obj(o)[0].lower()
+        if nm: node_items[nm].setdefault(it, None)
+for nm in list(node_items):
+    cm = cm_nodes.get(nm, {})
+    for it in node_items[nm]:
+        node_items[nm][it] = cm.get(it) or (1.0 if it == max(node_items[nm], key=lambda x: cm.get(x, 0)) else 0.05)
+zone_nodes = collections.defaultdict(dict)   # area -> {nom: nb}
+for nm in node_items:
+    objs = set()
+    for it in node_items[nm]: objs |= {o for o in item_objs[it] if obj(o)[0].lower() == nm}
+    q = collections.Counter()
+    for o in objs:
+        for z, pts in obj(o)[1].items():
+            if isinstance(z, int) and z > 0: q[z] += len(pts)
+    for z, c in q.items(): zone_nodes[z][nm] = c
+    for z, cnt in gm_count.items():
+        if nm in cnt: zone_nodes[z][nm] = cnt[nm]          # GatherMate prioritaire
+
+def money_per_kill(nid):
+    prior = cm_npc.get(nid, (0, 0, None, 0))[2]
+    corpses, copper = money.get(nid, (0, 0.0))
+    if prior is None: return copper / corpses if corpses >= 10 else None
+    return (copper + prior * K_MONEY) / (corpses + K_MONEY)
+
+# mobs : area -> tranche de niveau (5 niv.) -> agrégats
+bands = collections.defaultdict(lambda: collections.defaultdict(lambda: {'s': 0, 'lo': 999, 'hi': 0, 'or': 0.0, 'orS': 0, 'gris': 0.0, 'grisS': 0, 'drops': collections.Counter()}))
+mob_items = collections.defaultdict(dict)   # npc -> {item: taux}
+for it in items:
+    for n in item_npcs[it] | cloth_npcs.get(it, set()):
+        r, _ = mob_rate(it, n)
+        if r: mob_items[n][it] = r
+for nid in db.ids('Npc'):
+    name, lo, hi, rank, friendly, sp = npc(nid)
+    if friendly or not sp or not lo or rank not in (0,): continue
+    if cm_npc.get(nid, (0,))[0] == 8: continue          # bestioles
+    mk, gr = money_per_kill(nid), cm_npc.get(nid, (0, 0, 0, None))[3]
+    for z, pts in sp.items():
+        if not (isinstance(z, int) and z > 0): continue
+        b = bands[z][(lo + hi) // 2 // 5]
+        c = len(pts); b['s'] += c
+        b['lo'] = min(b['lo'], lo); b['hi'] = max(b['hi'], hi or lo)
+        if mk is not None: b['or'] += mk * c; b['orS'] += c
+        if gr is not None: b['gris'] += gr * c; b['grisS'] += c
+        for it, r in mob_items.get(nid, {}).items(): b['drops'][it] += r * c
+
+zones_out = {}
+for z in set(zone_nodes) | set(bands):
+    nodes = [(nm, c, node_items[nm]) for nm, c in zone_nodes.get(z, {}).items() if c >= 3]
+    mobs = []
+    for key, b in bands.get(z, {}).items():
+        if b['s'] < 10: continue
+        drops = sorted(((it, v / b['s']) for it, v in b['drops'].items() if v / b['s'] >= 0.002), key=lambda t: -t[1])[:8]
+        mobs.append((b['lo'], b['hi'], b['s'], b['or'] / b['orS'] if b['orS'] else -1, b['gris'] / b['grisS'] if b['grisS'] else -1, drops))
+    if nodes or mobs: zones_out[z] = (nodes, sorted(mobs))
+log('zones :', len(zones_out))
+
 # ---------- Tests de cohérence ----------
 def check():
     errs = []
@@ -196,6 +296,10 @@ def check():
         if res[it][1][0][1] < 20: errs.append('%s : moins de 20 points de récolte dans la meilleure zone' % nm)
     if 2770 in res and not any(z[0] in (1, 12, 14, 40, 85, 215, 141) for z in res[2770][1]):
         errs.append('Copper Ore : aucune zone de départ dans le top 6')
+    if len(zones_out) < 40: errs.append('seulement %d zones' % len(zones_out))
+    dz = zones_out.get(14) or zones_out.get(12)
+    if not dz or not dz[1]: errs.append('Durotar/Elwynn : pas de mobs')
+    elif not any(m[3] > 0 for m in dz[1]): errs.append('Durotar/Elwynn : pas de PO par kill')
     return errs
 
 errs = check()
@@ -215,4 +319,19 @@ with open(tmp, 'w', encoding='utf8', newline='\n') as f:
         f.write('  [%d]=%s,\n' % (it, luastr(res[it][0])))
     f.write('}\n')
 os.replace(tmp, OUT)
+
+ZOUT = os.path.join(os.path.dirname(OUT), 'ZoneDB.lua')
+with open(ZOUT + '.tmp', 'w', encoding='utf8', newline='\n') as f:
+    f.write('-- GÉNÉRÉ par tools/gen.py. Ne pas éditer.\n')
+    f.write('-- [areaID] = { n = { {type m/h, nbNœuds, {item, qté, ...}}, ... },\n')
+    f.write('--   m = { {lvlMin, lvlMax, nbSpawns, POparKill (-1 inconnu), grisParKill (-1 inconnu), {item, tauxParKill, ...}}, ... } }\n')
+    f.write('local _, ns = ...\nns.ZoneDB = {\n')
+    for z in sorted(zones_out):
+        nodes, mobs = zones_out[z]
+        ns_ = ','.join('{"%s",%d,{%s}}' % (kind_of(nm), c, ','.join('%d,%.3f' % (it, q) for it, q in its.items())) for nm, c, its in nodes)
+        ms_ = ','.join('{%d,%d,%d,%.1f,%.1f,{%s}}' % (lo, hi, sp_, mo, gr, ','.join('%d,%.4f' % d for d in dr)) for lo, hi, sp_, mo, gr, dr in mobs)
+        f.write('  [%d]={n={%s},m={%s}},\n' % (z, ns_, ms_))
+    f.write('}\nns.UiToArea = {%s}\n' % ','.join('[%d]=%d' % kv for kv in sorted(ui2area.items())))
+os.replace(ZOUT + '.tmp', ZOUT)
+log('OK :', len(zones_out), 'zones ->', ZOUT)
 log('OK :', len(res), 'objets ->', OUT)

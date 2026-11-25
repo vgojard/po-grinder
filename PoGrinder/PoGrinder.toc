@@ -2,13 +2,15 @@
 ## Title: PoGrinder
 ## Notes: Trouve les ressources les plus rentables à farmer, d'après les prix TSM.
 ## Author: Valentin
-## Version: 0.2.0
+## Version: 0.3.0
 ## OptionalDeps: TradeSkillMaster
 ## SavedVariables: PoGrinderDB, PoGrinderLog
 
 Core.lua
 Prices.lua
 FarmDB.lua
+ZoneDB.lua
 Items.lua
 LootLog.lua
+Zones.lua
 Commands.lua
