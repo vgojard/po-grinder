@@ -1,0 +1,14 @@
+## Interface: 16001, 120105, 120107
+## Title: PoGrinder
+## Notes: Trouve les ressources les plus rentables à farmer, d'après les prix TSM.
+## Author: Valentin
+## Version: 0.2.0
+## OptionalDeps: TradeSkillMaster
+## SavedVariables: PoGrinderDB, PoGrinderLog
+
+Core.lua
+Prices.lua
+FarmDB.lua
+Items.lua
+LootLog.lua
+Commands.lua
