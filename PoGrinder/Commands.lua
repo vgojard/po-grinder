@@ -55,8 +55,19 @@ end
 SLASH_POGRIND1 = "/pogrind"
 SlashCmdList.POGRIND = function(msg)
   msg = strtrim(msg or "")
-  if msg == "" then
+  if msg == "" or msg == "zones" then
+    ns.Zones.Report()
+    return
+  end
+  if msg == "objets" then
     scanAll()
+    return
+  end
+  local key, val = msg:match("^(%a+)%s+(%d+)$")
+  local settings = { kph = "killsPerHour", nph = "nodesPerHour" }
+  if key and settings[key] then
+    ns.db[settings[key]] = tonumber(val)
+    ns.Print(settings[key] .. " = " .. val)
     return
   end
   if msg == "log" then
@@ -67,6 +78,6 @@ SlashCmdList.POGRIND = function(msg)
   if id then
     showItem(id)
   else
-    ns.Print("Usage : /pogrind  |  /pogrind <itemID ou lien>  |  /pogrind log")
+    ns.Print("Usage : /pogrind (zones)  |  /pogrind objets  |  /pogrind <objet>  |  /pogrind log  |  /pogrind kph <kills/h>  |  /pogrind nph <nœuds/h>")
   end
 end
